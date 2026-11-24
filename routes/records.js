@@ -1,161 +1,136 @@
-const router = require("express").Router();
+const express = require("express");
 const pool = require("../db");
+
+const router = express.Router();
 
 const ALLOWED_STATUSES = ["Pending", "In progress", "Completed"];
 
-function parseId(rawId) {
-  if (!/^[1-9]\d*$/.test(String(rawId))) {
-    return null;
-  }
-  return Number(rawId);
-}
+function validateRecordInput(body) {
+  const { title, category, description, status } = body || {};
 
-function validateRecordBody(body) {
-  if (!body || typeof body !== "object") {
-    return { error: "Request body must be a JSON object." };
+  if (!title || typeof title !== "string" || !title.trim()) {
+    return "Title is required and must be a non-empty string.";
   }
-
-  const { title, category, description, status } = body;
-
-  if (
-    typeof title !== "string" ||
-    typeof category !== "string" ||
-    typeof description !== "string" ||
-    typeof status !== "string"
-  ) {
-    return { error: "Title, category, description, and status must all be strings." };
+  if (!category || typeof category !== "string" || !category.trim()) {
+    return "Category is required and must be a non-empty string.";
   }
-
-  const cleanTitle = title.trim();
-  const cleanCategory = category.trim();
-  const cleanDescription = description.trim();
-  const cleanStatus = status.trim();
-
-  if (cleanTitle.length < 3 || cleanTitle.length > 80) {
-    return { error: "Title must have 3 to 80 characters." };
+  if (!description || typeof description !== "string" || !description.trim()) {
+    return "Description is required and must be a non-empty string.";
   }
-  if (cleanCategory.length < 2 || cleanCategory.length > 40) {
-    return { error: "Category must have 2 to 40 characters." };
+  if (!status || !ALLOWED_STATUSES.includes(status)) {
+    return `Status is required and must be one of: ${ALLOWED_STATUSES.join(", ")}.`;
   }
-  if (cleanDescription.length < 5 || cleanDescription.length > 300) {
-    return { error: "Description must have 5 to 300 characters." };
-  }
-  if (!ALLOWED_STATUSES.includes(cleanStatus)) {
-    return { error: "Status must be Pending, In progress, or Completed." };
-  }
-
-  return {
-    data: {
-      title: cleanTitle,
-      category: cleanCategory,
-      description: cleanDescription,
-      status: cleanStatus
-    }
-  };
+  return null;
 }
 
 // GET /api/records - Read all records
-router.get("/", async (req, res, next) => {
+router.get("/", async (req, res) => {
   try {
-    const result = await pool.query(
-      "SELECT id, title, category, description, status FROM records ORDER BY id"
-    );
+    const result = await pool.query("SELECT * FROM records ORDER BY id ASC");
     res.status(200).json(result.rows);
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    console.error("Error fetching records:", err);
+    res.status(500).json({ message: "Failed to fetch records." });
   }
 });
 
-// GET /api/records/:id - Read one record
-router.get("/:id", async (req, res, next) => {
+// GET /api/records/:id - Read single record
+router.get("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: "Invalid record ID." });
+  }
+
   try {
-    const id = parseId(req.params.id);
-    if (!id) {
-      return res.status(400).json({ message: "Record id must be a positive whole number." });
-    }
-
-    const result = await pool.query(
-      "SELECT id, title, category, description, status FROM records WHERE id = $1",
-      [id]
-    );
-
-    if (result.rowCount === 0) {
+    const result = await pool.query("SELECT * FROM records WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
       return res.status(404).json({ message: "Record not found." });
     }
-
     res.status(200).json(result.rows[0]);
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    console.error("Error fetching record:", err);
+    res.status(500).json({ message: "Failed to fetch record." });
   }
 });
 
-// POST /api/records - Create a record
-router.post("/", async (req, res, next) => {
+// POST /api/records - Create record
+router.post("/", async (req, res) => {
+  const validationError = validateRecordInput(req.body);
+  if (validationError) {
+    return res.status(400).json({ message: validationError });
+  }
+
+  const { title, category, description, status } = req.body;
+
   try {
-    const { error, data } = validateRecordBody(req.body);
-    if (error) {
-      return res.status(400).json({ message: error });
-    }
-
     const result = await pool.query(
-      "INSERT INTO records (title, category, description, status) VALUES ($1, $2, $3, $4) RETURNING id, title, category, description, status",
-      [data.title, data.category, data.description, data.status]
+      `INSERT INTO records (title, category, description, status)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [title.trim(), category.trim(), description.trim(), status]
     );
-
     res.status(201).json(result.rows[0]);
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    console.error("Error creating record:", err);
+    res.status(500).json({ message: "Failed to create record." });
   }
 });
 
-// PUT /api/records/:id - Update a record
-router.put("/:id", async (req, res, next) => {
+// PUT /api/records/:id - Update record
+router.put("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: "Invalid record ID." });
+  }
+
+  const validationError = validateRecordInput(req.body);
+  if (validationError) {
+    return res.status(400).json({ message: validationError });
+  }
+
+  const { title, category, description, status } = req.body;
+
   try {
-    const id = parseId(req.params.id);
-    if (!id) {
-      return res.status(400).json({ message: "Record id must be a positive whole number." });
-    }
-
-    const { error, data } = validateRecordBody(req.body);
-    if (error) {
-      return res.status(400).json({ message: error });
-    }
-
     const result = await pool.query(
-      "UPDATE records SET title = $1, category = $2, description = $3, status = $4 WHERE id = $5 RETURNING id, title, category, description, status",
-      [data.title, data.category, data.description, data.status, id]
+      `UPDATE records
+       SET title = $1, category = $2, description = $3, status = $4
+       WHERE id = $5
+       RETURNING *`,
+      [title.trim(), category.trim(), description.trim(), status, id]
     );
 
-    if (result.rowCount === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ message: "Record not found." });
     }
 
     res.status(200).json(result.rows[0]);
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    console.error("Error updating record:", err);
+    res.status(500).json({ message: "Failed to update record." });
   }
 });
 
-// DELETE /api/records/:id - Delete a record
-router.delete("/:id", async (req, res, next) => {
-  try {
-    const id = parseId(req.params.id);
-    if (!id) {
-      return res.status(400).json({ message: "Record id must be a positive whole number." });
-    }
+// DELETE /api/records/:id - Delete record
+router.delete("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: "Invalid record ID." });
+  }
 
+  try {
     const result = await pool.query(
       "DELETE FROM records WHERE id = $1 RETURNING id",
       [id]
     );
 
-    if (result.rowCount === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ message: "Record not found." });
     }
 
     res.status(200).json({ message: "Record deleted." });
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    console.error("Error deleting record:", err);
+    res.status(500).json({ message: "Failed to delete record." });
   }
 });
 
